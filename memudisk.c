@@ -40,6 +40,8 @@
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
 #define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
 
+#define CONFIG_BLK_DEV_XIP
+
 static struct proc_dir_entry* proc_entry;
 static struct proc_dir_entry* proc_entry_stats;
 
@@ -50,6 +52,7 @@ static unsigned long long ReadReqs;
 static unsigned long long WriteReqs;
 static unsigned long long ReadSects;
 static unsigned long long WriteSects;
+static unsigned long long DirectAccess;
 
 int memudisk_proc_write(struct file* filp, const char __user *buff, unsigned long len, void* data) {
 	sscanf(buff, "%d %d", &ReadDelay, &WriteDelay);
@@ -61,7 +64,7 @@ int memudisk_proc_write(struct file* filp, const char __user *buff, unsigned lon
 
 int memustats_proc_read(char *page, char** start, off_t off, int count, int *eof, void*data) {
 	int len=0;
-	len+=sprintf(page, "%llu %llu %llu %llu\n",ReadReqs,ReadSects,WriteReqs,WriteSects);
+	len+=sprintf(page, "%llu %llu %llu %llu %llu\n",ReadReqs,ReadSects,WriteReqs,WriteSects, DirectAccess);
 	return len;
 }
 
@@ -245,6 +248,7 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
 	size_t copy;
 
+//	printk(KERN_INFO "%s: size %zu\n", __func__, n);
 	copy = min_t(size_t, n, PAGE_SIZE - offset);
 	page = brd_lookup_page(brd, sector);
 	BUG_ON(!page);
@@ -389,6 +393,7 @@ static int brd_direct_access (struct block_device *bdev, sector_t sector,
 	struct brd_device *brd = bdev->bd_disk->private_data;
 	struct page *page;
 
+	DirectAccess++;
 	if (!brd)
 		return -ENODEV;
 	if (sector & (PAGE_SECTORS-1))
@@ -483,6 +488,7 @@ static struct brd_device *brd_alloc(int i)
 	WriteReqs = 0;
 	ReadSects = 0;
 	WriteSects = 0;
+	DirectAccess = 0;
 
 	brd->brd_number		= i;
 	spin_lock_init(&brd->brd_lock);
