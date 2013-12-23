@@ -33,6 +33,7 @@
 #include <linux/radix-tree.h>
 #include <linux/buffer_head.h> /* invalidate_bh_lrus() */
 #include <linux/proc_fs.h>
+#include <linux/delay.h>
 
 #include <asm/uaccess.h>
 
@@ -40,10 +41,8 @@
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
 #define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
 
-#define CONFIG_BLK_DEV_XIP
-
-static struct proc_dir_entry* proc_entry;
-static struct proc_dir_entry* proc_entry_stats;
+//static struct proc_dir_entry* proc_entry;
+//static struct proc_dir_entry* proc_entry_stats;
 
 static int ReadDelay;
 static int WriteDelay;
@@ -54,7 +53,7 @@ static unsigned long long ReadSects;
 static unsigned long long WriteSects;
 static unsigned long long DirectAccess;
 
-int memudisk_proc_write(struct file* filp, const char __user *buff, unsigned long len, void* data) {
+ssize_t memudisk_proc_write(struct file* filp, const char __user *buff, unsigned long len, void* data) {
 	sscanf(buff, "%d %d", &ReadDelay, &WriteDelay);
 
 	printk("Memublock Timings Changed to Read: %d ns, Write: %d ns\n",ReadDelay,WriteDelay);
@@ -62,13 +61,26 @@ int memudisk_proc_write(struct file* filp, const char __user *buff, unsigned lon
 	return len;
 }
 
-int memustats_proc_read(char *page, char** start, off_t off, int count, int *eof, void*data) {
+ssize_t memustats_proc_read(char *page, char** start, off_t off, int count, int *eof, void*data) {
 	int len=0;
 	len+=sprintf(page, "%llu %llu %llu %llu %llu\n",ReadReqs,ReadSects,WriteReqs,WriteSects, DirectAccess);
 	return len;
 }
 
+int memudisk_open(struct inode *inode, struct file *file) {
+	int len=0;
+	return len;
+}
 
+static const struct file_operations memudisk_write_fops = {
+	.open	 = memudisk_open,
+//	.write	 = memudisk_proc_write,
+};
+
+static const struct file_operations memudisk_read_fops = {
+	.open	 = memudisk_open,
+//	.read	 = memustats_proc_read,
+};
 
 
 /*
@@ -253,11 +265,11 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 	page = brd_lookup_page(brd, sector);
 	BUG_ON(!page);
 
-	dst = kmap_atomic(page, KM_USER1);
+	dst = kmap_atomic(page);
 	memcpy(dst + offset, src, copy);
 	//we want to wait WriteDelay ns for every 32 bytes - this matches the bee3 hardware delays
 	ndelay(WriteDelay * (copy/64));
-	kunmap_atomic(dst, KM_USER1);
+	kunmap_atomic(dst);
 
 	if (copy < n) {
 		src += copy;
@@ -266,10 +278,10 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 		page = brd_lookup_page(brd, sector);
 		BUG_ON(!page);
 
-		dst = kmap_atomic(page, KM_USER1);
+		dst = kmap_atomic(page);
 		memcpy(dst, src, copy);
 		ndelay(WriteDelay * (copy/64));
-		kunmap_atomic(dst, KM_USER1);
+		kunmap_atomic(dst);
 	}
 }
 
@@ -287,10 +299,10 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 	copy = min_t(size_t, n, PAGE_SIZE - offset);
 	page = brd_lookup_page(brd, sector);
 	if (page) {
-		src = kmap_atomic(page, KM_USER1);
+		src = kmap_atomic(page);
 		memcpy(dst, src + offset, copy);
 		ndelay(ReadDelay * (copy/64));
-		kunmap_atomic(src, KM_USER1);
+		kunmap_atomic(src);
 	} else {
 		memset(dst, 0, copy);
 		ndelay(ReadDelay * (copy/64));
@@ -302,10 +314,10 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 		copy = n - copy;
 		page = brd_lookup_page(brd, sector);
 		if (page) {
-			src = kmap_atomic(page, KM_USER1);
+			src = kmap_atomic(page);
 			memcpy(dst, src, copy);
 			ndelay(ReadDelay * (copy/64));
-			kunmap_atomic(src, KM_USER1);
+			kunmap_atomic(src);
 		} else {
 			memset(dst, 0, copy);
 			ndelay(ReadDelay * (copy/64));
@@ -330,19 +342,19 @@ static int brd_do_bvec(struct brd_device *brd, struct page *page,
 			goto out;
 	}
 
-	mem = kmap_atomic(page, KM_USER0);
+	mem = kmap_atomic(page);
 	if (rw == READ) {
 		copy_from_brd(mem + off, brd, sector, len);
 		flush_dcache_page(page);
 	} else
 		copy_to_brd(brd, mem + off, sector, len);
-	kunmap_atomic(mem, KM_USER0);
+	kunmap_atomic(mem);
 
 out:
 	return err;
 }
 
-static int brd_make_request(struct request_queue *q, struct bio *bio)
+static void brd_make_request(struct request_queue *q, struct bio *bio)
 {
 	struct block_device *bdev = bio->bi_bdev;
 	struct brd_device *brd = bdev->bd_disk->private_data;
@@ -383,7 +395,7 @@ static int brd_make_request(struct request_queue *q, struct bio *bio)
 out:
 	bio_endio(bio, err);
 
-	return 0;
+	return;
 }
 
 #ifdef CONFIG_BLK_DEV_XIP
@@ -445,7 +457,7 @@ static int brd_ioctl(struct block_device *bdev, fmode_t mode,
 
 static struct block_device_operations brd_fops = {
 	.owner =		THIS_MODULE,
-	.locked_ioctl =		brd_ioctl,
+	.ioctl =		brd_ioctl,
 #ifdef CONFIG_BLK_DEV_XIP
 	.direct_access =	brd_direct_access,
 #endif
@@ -635,27 +647,28 @@ static int __init brd_init(void)
 
 	printk(KERN_INFO "memubrd: module loaded\n");
 
-
+#if 0
 	//create proc entry
-	proc_entry = create_proc_entry("memudisk", S_IFREG, NULL);
+//	proc_entry = create_proc_entry("memudisk", S_IFREG, NULL);
+	proc_entry = proc_create_data("memudisk", S_IFREG, NULL, &memudisk_write_fops, NULL);
 	if (proc_entry == NULL) {
 		printk("Unable to create proc entry for memudisk\n");
 	} else {
-		proc_entry->write_proc = memudisk_proc_write;
+//		proc_entry->write_proc = memudisk_proc_write;
 
 		//acaulfie: kernels >= 2.6.30 don't have an owner field
 		//proc_entry->owner = THIS_MODULE;
 	}
 
-	proc_entry_stats = create_proc_entry("memustats", S_IFREG, NULL);
+//	proc_entry_stats = create_proc_entry("memustats", S_IFREG, NULL);
+	proc_entry_stats = proc_create_data("memustats", S_IFREG, NULL, &memudisk_read_fops, NULL);
 	if (proc_entry_stats == NULL) {
 		printk("Unable to create proc entry for memustats\n");
 	} else {
-		proc_entry_stats->read_proc = memustats_proc_read;
+//		proc_entry_stats->read_proc = memustats_proc_read;
 
 	}
-
-
+#endif
 
 	return 0;
 
@@ -683,8 +696,8 @@ static void __exit brd_exit(void)
 	unregister_blkdev(DeviceMajor, "memuramdisk");
 
 	//clean up proc entry
-	remove_proc_entry("memudisk", NULL);
-	remove_proc_entry("memustats", NULL);
+//	remove_proc_entry("memudisk", NULL);
+//	remove_proc_entry("memustats", NULL);
 }
 
 module_init(brd_init);
