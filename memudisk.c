@@ -37,12 +37,18 @@
 
 #include <asm/uaccess.h>
 
+#include "memudisk.h"
+
+
 #define SECTOR_SHIFT		9
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
 #define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
 
 //static struct proc_dir_entry* proc_entry;
 //static struct proc_dir_entry* proc_entry_stats;
+
+/* Cache backing device */
+struct block_device* backing_dev;
 
 static int ReadDelay;
 static int WriteDelay;
@@ -81,34 +87,6 @@ static const struct file_operations memudisk_read_fops = {
 	.open	 = memudisk_open,
 //	.read	 = memustats_proc_read,
 };
-
-
-/*
- * Each block ramdisk device has a radix_tree brd_pages of pages that stores
- * the pages containing the block device's contents. A brd page's ->index is
- * its offset in PAGE_SIZE units. This is similar to, but in no way connected
- * with, the kernel's pagecache or buffer cache (which sit above our block
- * device).
- */
-struct brd_device {
-	int		brd_number;
-	int		brd_refcnt;
-	loff_t		brd_offset;
-	loff_t		brd_sizelimit;
-	unsigned	brd_blocksize;
-
-	struct request_queue	*brd_queue;
-	struct gendisk		*brd_disk;
-	struct list_head	brd_list;
-
-	/*
-	 * Backing store of pages and lock to protect it. This is the contents
-	 * of the block device.
-	 */
-	spinlock_t		brd_lock;
-	struct radix_tree_root	brd_pages;
-};
-
 
 
 /*
@@ -555,6 +533,8 @@ static void brd_free(struct brd_device *brd)
 	put_disk(brd->brd_disk);
 	blk_cleanup_queue(brd->brd_queue);
 	brd_free_pages(brd);
+	if (enable_cache)
+		brd_cache_exit(brd);
 	kfree(brd);
 }
 
@@ -600,6 +580,7 @@ static struct kobject *brd_probe(dev_t dev, int *part, void *data)
 static int __init brd_init(void)
 {
 	int i, nr;
+	int ret;
 	unsigned long range;
 	struct brd_device *brd, *next;
 
@@ -636,11 +617,19 @@ static int __init brd_init(void)
 	if (register_blkdev(DeviceMajor, "memuramdisk"))
 		return -EIO;
 
+	if (enable_cache) {
+		ret = brd_cache_open_backing_dev(&backing_dev, backing_dev_name);
+		if (ret)
+			brd_info("brd cache initialization failed\n");
+	}
+
 	for (i = 0; i < nr; i++) {
 		brd = brd_alloc(i);
 		if (!brd)
 			goto out_free;
 		list_add_tail(&brd->brd_list, &brd_devices);
+		if (enable_cache)
+			brd_cache_init(brd, backing_dev);
 	}
 
 	/* point of no return */
@@ -651,7 +640,7 @@ static int __init brd_init(void)
 	blk_register_region(MKDEV(DeviceMajor, 0), range,
 				  THIS_MODULE, brd_probe, NULL, NULL);
 
-	printk(KERN_INFO "memubrd: module loaded\n");
+	printk(KERN_INFO "bankshot2: module loaded\n");
 
 #if 0
 	//create proc entry
