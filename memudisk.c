@@ -467,7 +467,9 @@ static struct block_device_operations brd_fops = {
  * And now the modules code and kernel interface.
  */
 static int rd_nr;
+static int enable_cache = 0;
 int rd_size = CONFIG_BLK_DEV_RAM_SIZE;
+static char* backing_dev_name = "/dev/ram0";
 static int max_part;
 static int part_shift;
 int DeviceMajor = 242;
@@ -477,6 +479,10 @@ module_param(rd_size, int, 0);
 MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
 module_param(max_part, int, 0);
 MODULE_PARM_DESC(max_part, "Maximum number of partitions per RAM disk");
+module_param(enable_cache, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(enable_cache, "Enable cache for memudisk");
+module_param(backing_dev_name, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(backing_dev_name, "Backing store device name");
 MODULE_LICENSE("GPL");
 
 
