@@ -56,7 +56,7 @@ int rd_size = CONFIG_BLK_DEV_RAM_SIZE;
 static char* backing_dev_name = "/dev/ram0";
 static int max_part;
 static int part_shift;
-int DeviceMajor = 242;
+int DeviceMajor = 243;
 module_param(rd_nr, int, 0);
 MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
 module_param(rd_size, int, 0);
@@ -363,6 +363,7 @@ static void brd_make_request(struct request_queue *q, struct bio *bio)
 	sector_t sector;
 	int i;
 	int err = -EIO;
+	int submitted_to_cache = 0;
 
 	sector = bio->bi_sector;
 	if (sector + (bio->bi_size >> SECTOR_SHIFT) >
@@ -392,10 +393,11 @@ static void brd_make_request(struct request_queue *q, struct bio *bio)
 	}
 
 	if (enable_cache && rw != READ)
-//	if (enable_cache)
-		submit_bio_to_cache(brd, bio);
+		submitted_to_cache = submit_bio_to_cache(brd, bio);
 out:
-	bio_endio(bio, err);
+	/* If bio submitted to cache, bio_endio will be called in clone bio */
+	if (!submitted_to_cache)
+		bio_endio(bio, err);
 
 	return;
 }
@@ -621,19 +623,31 @@ static int __init brd_init(void)
 	if (register_blkdev(DeviceMajor, "memuramdisk"))
 		return -EIO;
 
+#if 0
 	if (enable_cache) {
 		ret = brd_cache_open_backing_dev(&backing_dev, backing_dev_name);
 		if (ret)
 			brd_info("brd cache initialization failed\n");
 	}
+#endif
 
 	for (i = 0; i < nr; i++) {
 		brd = brd_alloc(i);
 		if (!brd)
 			goto out_free;
 		list_add_tail(&brd->brd_list, &brd_devices);
-		if (enable_cache)
+		if (enable_cache) {
+			if (i == 0) {
+				ret = brd_cache_open_backing_dev(&backing_dev,
+							backing_dev_name, brd);
+				if (ret) {
+					brd_info("brd cache initialization "
+						"failed, disable cache\n");
+					enable_cache = 0;
+				}
+			}
 			brd_cache_init(brd, backing_dev);
+		}
 	}
 
 	/* point of no return */
@@ -690,6 +704,9 @@ static void __exit brd_exit(void)
 
 	list_for_each_entry_safe(brd, next, &brd_devices, brd_list)
 		brd_del_one(brd);
+
+	if (enable_cache)
+		blkdev_put(backing_dev, FMODE_READ | FMODE_WRITE | FMODE_EXCL);
 
 	blk_unregister_region(MKDEV(DeviceMajor, 0), range);
 	unregister_blkdev(DeviceMajor, "memuramdisk");

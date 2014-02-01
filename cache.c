@@ -4,21 +4,32 @@
 
 #include "memudisk.h"
 
-void submit_bio_to_cache(struct brd_device *brd, struct bio *bio)
+void brd_bio_endio(struct bio *bio, int error)
 {
-	struct block_device *origin_bdev;
+	struct bio *bio_org = (struct bio *)(bio->bi_private);
+
+	bio_endio(bio_org, 0);
+	bio_put(bio);
+}
+
+int submit_bio_to_cache(struct brd_device *brd, struct bio *bio)
+{
 	struct brd_cache_info *cinfo = brd->cache_info;
-	int rw = bio_rw(bio); 	
+	struct bio *bdev_bio;
+	int rw = bio_rw(bio);
 
 	if (cinfo) {
-		bio_get(bio);
-		origin_bdev = bio->bi_bdev;
-		bio->bi_bdev = cinfo->bs_bdev;
-		submit_bio(rw, bio);
-		bio_endio(bio, 0);
-		bio_put(bio);
-		bio->bi_bdev = origin_bdev;
+		bdev_bio = bio_clone(bio, GFP_KERNEL);
+		bdev_bio->bi_bdev = cinfo->bs_bdev;
+		bdev_bio->bi_private = bio;
+		bdev_bio->bi_end_io = brd_bio_endio;
+//		brd_info("submit bio %p to cache %p\n", bdev_bio, cinfo->bs_bdev);
+		submit_bio(rw, bdev_bio);
+
+		return 1;
 	}
+
+	return 0;
 }
 
 static int brd_cache_assign_backing_dev(struct brd_cache_info *cinfo,
@@ -48,6 +59,8 @@ static int brd_cache_assign_backing_dev(struct brd_cache_info *cinfo,
 			brd_info("Backing store number %d\n",
 				bdev->bd_dev);
 
+			cinfo->bs_bdev = bdev;
+
 			return 0;
 
 		} else
@@ -61,14 +74,15 @@ static int brd_cache_assign_backing_dev(struct brd_cache_info *cinfo,
 	
 
 int brd_cache_open_backing_dev(struct block_device **bdev,
-					char* backing_dev_name)
+					char* backing_dev_name,
+					struct brd_device* brd)
 {
 	dev_t dev;
 	int ret;
 
 	brd_info("Init brd cache, backing device %s\n", backing_dev_name);
 	*bdev = lookup_bdev(backing_dev_name);
-	if (IS_ERR(bdev)) {
+	if (IS_ERR(*bdev)) {
 		brd_info("Backing device not found\n");
 		ret = -EINVAL;
 		goto fail;
@@ -83,7 +97,7 @@ int brd_cache_open_backing_dev(struct block_device **bdev,
 
 	if (dev) {
 		*bdev = blkdev_get_by_dev(dev, FMODE_READ |
-					FMODE_WRITE | FMODE_EXCL, NULL);
+					FMODE_WRITE | FMODE_EXCL, brd);
 		if(IS_ERR(*bdev)) {
 			return -EINVAL;
 			goto fail;
@@ -127,9 +141,6 @@ int brd_cache_init(struct brd_device *brd, struct block_device* bdev)
 void brd_cache_exit(struct brd_device *brd)
 {
 	brd_info("exiting cache\n");
-	if (brd->cache_info->bs_bdev)
-		blkdev_put(brd->cache_info->bs_bdev, FMODE_READ |
-					FMODE_WRITE | FMODE_EXCL);
 
 	kfree(brd->cache_info);
 }
