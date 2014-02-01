@@ -4,6 +4,23 @@
 
 #include "memudisk.h"
 
+void submit_bio_to_cache(struct brd_device *brd, struct bio *bio)
+{
+	struct block_device *origin_bdev;
+	struct brd_cache_info *cinfo = brd->cache_info;
+	int rw = bio_rw(bio); 	
+
+	if (cinfo) {
+		bio_get(bio);
+		origin_bdev = bio->bi_bdev;
+		bio->bi_bdev = cinfo->bs_bdev;
+		submit_bio(rw, bio);
+		bio_endio(bio, 0);
+		bio_put(bio);
+		bio->bi_bdev = origin_bdev;
+	}
+}
+
 static int brd_cache_assign_backing_dev(struct brd_cache_info *cinfo,
 					struct block_device *bdev)
 {

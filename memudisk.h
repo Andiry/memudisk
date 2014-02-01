@@ -50,6 +50,7 @@ struct brd_device {
 };
 
 
+void submit_bio_to_cache(struct brd_device *brd, struct bio *bio);
 int brd_cache_open_backing_dev(struct block_device **bdev,
 					char* backing_dev_name);
 int brd_cache_init(struct brd_device *brd, struct block_device* bdev);

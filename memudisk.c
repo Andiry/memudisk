@@ -47,6 +47,28 @@
 //static struct proc_dir_entry* proc_entry;
 //static struct proc_dir_entry* proc_entry_stats;
 
+/*
+ * And now the modules code and kernel interface.
+ */
+static int rd_nr;
+int enable_cache = 0;
+int rd_size = CONFIG_BLK_DEV_RAM_SIZE;
+static char* backing_dev_name = "/dev/ram0";
+static int max_part;
+static int part_shift;
+int DeviceMajor = 242;
+module_param(rd_nr, int, 0);
+MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
+module_param(rd_size, int, 0);
+MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
+module_param(max_part, int, 0);
+MODULE_PARM_DESC(max_part, "Maximum number of partitions per RAM disk");
+module_param(enable_cache, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(enable_cache, "Enable cache for memudisk");
+module_param(backing_dev_name, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(backing_dev_name, "Backing store device name");
+MODULE_LICENSE("GPL");
+
 /* Cache backing device */
 struct block_device* backing_dev;
 
@@ -360,7 +382,6 @@ static void brd_make_request(struct request_queue *q, struct bio *bio)
 		WriteSects+=bio->bi_size >> SECTOR_SHIFT;
 	}
 
-
 	bio_for_each_segment(bvec, bio, i) {
 		unsigned int len = bvec->bv_len;
 		err = brd_do_bvec(brd, bvec->bv_page, len,
@@ -370,6 +391,9 @@ static void brd_make_request(struct request_queue *q, struct bio *bio)
 		sector += len >> SECTOR_SHIFT;
 	}
 
+	if (enable_cache && rw != READ)
+//	if (enable_cache)
+		submit_bio_to_cache(brd, bio);
 out:
 	bio_endio(bio, err);
 
@@ -440,28 +464,6 @@ static struct block_device_operations brd_fops = {
 	.direct_access =	brd_direct_access,
 #endif
 };
-
-/*
- * And now the modules code and kernel interface.
- */
-static int rd_nr;
-static int enable_cache = 0;
-int rd_size = CONFIG_BLK_DEV_RAM_SIZE;
-static char* backing_dev_name = "/dev/ram0";
-static int max_part;
-static int part_shift;
-int DeviceMajor = 242;
-module_param(rd_nr, int, 0);
-MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
-module_param(rd_size, int, 0);
-MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
-module_param(max_part, int, 0);
-MODULE_PARM_DESC(max_part, "Maximum number of partitions per RAM disk");
-module_param(enable_cache, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(enable_cache, "Enable cache for memudisk");
-module_param(backing_dev_name, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(backing_dev_name, "Backing store device name");
-MODULE_LICENSE("GPL");
 
 
 /*
@@ -551,6 +553,8 @@ static struct brd_device *brd_init_one(int i)
 	if (brd) {
 		add_disk(brd->brd_disk);
 		list_add_tail(&brd->brd_list, &brd_devices);
+		if (enable_cache)
+			brd_cache_init(brd, backing_dev);
 	}
 out:
 	return brd;
