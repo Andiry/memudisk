@@ -478,6 +478,7 @@ static struct brd_device *brd_alloc(int i)
 {
 	struct brd_device *brd;
 	struct gendisk *disk;
+	int ret;
 
 	brd = kzalloc(sizeof(*brd), GFP_KERNEL);
 	if (!brd)
@@ -521,6 +522,10 @@ static struct brd_device *brd_alloc(int i)
 	}
 */
 
+	ret = brd_char_setup(brd);
+	if (ret)
+		goto out_free_queue; 
+
 	return brd;
 
 out_free_queue:
@@ -538,6 +543,7 @@ static void brd_free(struct brd_device *brd)
 	brd_free_pages(brd);
 	if (enable_cache)
 		brd_cache_exit(brd);
+	brd_char_destroy(brd);
 	kfree(brd);
 }
 
@@ -630,6 +636,8 @@ static int __init brd_init(void)
 	}
 #endif
 
+	brd_char_init();
+
 	for (i = 0; i < nr; i++) {
 		brd = brd_alloc(i);
 		if (!brd)
@@ -707,6 +715,7 @@ static void __exit brd_exit(void)
 	if (enable_cache)
 		blkdev_put(backing_dev, FMODE_READ | FMODE_WRITE | FMODE_EXCL);
 
+	brd_char_exit();
 	blk_unregister_region(MKDEV(DeviceMajor, 0), range);
 	unregister_blkdev(DeviceMajor, "memuramdisk");
 

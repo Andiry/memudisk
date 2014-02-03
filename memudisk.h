@@ -3,6 +3,8 @@
 #include <linux/moduleparam.h>
 #include <linux/major.h>
 #include <linux/blkdev.h>
+#include <linux/cdev.h>
+#include <linux/fs.h>
 #include <linux/bio.h>
 #include <linux/highmem.h>
 #include <linux/gfp.h>
@@ -40,6 +42,9 @@ struct brd_device {
 	struct gendisk		*brd_disk;
 	struct list_head	brd_list;
 
+	struct cdev chardev;
+	dev_t chardevnum;
+
 	/*
 	 * Backing store of pages and lock to protect it. This is the contents
 	 * of the block device.
@@ -57,4 +62,8 @@ int brd_cache_open_backing_dev(struct block_device **bdev,
 int brd_cache_init(struct brd_device *brd, struct block_device* bdev);
 void brd_cache_exit(struct brd_device *brd);
 
-
+/* char.c */
+int brd_char_init(void);
+void brd_char_exit(void);
+int brd_char_setup(struct brd_device *brd);
+void brd_char_destroy(struct brd_device *brd);
