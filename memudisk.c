@@ -509,7 +509,7 @@ static struct brd_device *brd_alloc(int i)
 	disk->private_data	= brd;
 	disk->queue		= brd->brd_queue;
 	//disk->flags |= GENHD_FL_SUPPRESS_PARTITION_INFO;
-	sprintf(disk->disk_name, "memuram%d", i);
+	sprintf(disk->disk_name, "bankshot%d", i);
 	set_capacity(disk, rd_size * 2);
 
 /*
