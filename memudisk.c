@@ -37,12 +37,40 @@
 
 #include <asm/uaccess.h>
 
+#include "memudisk.h"
+
+
 #define SECTOR_SHIFT		9
 #define PAGE_SECTORS_SHIFT	(PAGE_SHIFT - SECTOR_SHIFT)
 #define PAGE_SECTORS		(1 << PAGE_SECTORS_SHIFT)
 
 //static struct proc_dir_entry* proc_entry;
 //static struct proc_dir_entry* proc_entry_stats;
+
+/*
+ * And now the modules code and kernel interface.
+ */
+static int rd_nr;
+int enable_cache = 0;
+int rd_size = CONFIG_BLK_DEV_RAM_SIZE;
+static char* backing_dev_name = "/dev/ram0";
+static int max_part;
+static int part_shift;
+int DeviceMajor = 243;
+module_param(rd_nr, int, 0);
+MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
+module_param(rd_size, int, 0);
+MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
+module_param(max_part, int, 0);
+MODULE_PARM_DESC(max_part, "Maximum number of partitions per RAM disk");
+module_param(enable_cache, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(enable_cache, "Enable cache for memudisk");
+module_param(backing_dev_name, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(backing_dev_name, "Backing store device name");
+MODULE_LICENSE("GPL");
+
+/* Cache backing device */
+struct block_device* backing_dev;
 
 static int ReadDelay;
 static int WriteDelay;
@@ -81,34 +109,6 @@ static const struct file_operations memudisk_read_fops = {
 	.open	 = memudisk_open,
 //	.read	 = memustats_proc_read,
 };
-
-
-/*
- * Each block ramdisk device has a radix_tree brd_pages of pages that stores
- * the pages containing the block device's contents. A brd page's ->index is
- * its offset in PAGE_SIZE units. This is similar to, but in no way connected
- * with, the kernel's pagecache or buffer cache (which sit above our block
- * device).
- */
-struct brd_device {
-	int		brd_number;
-	int		brd_refcnt;
-	loff_t		brd_offset;
-	loff_t		brd_sizelimit;
-	unsigned	brd_blocksize;
-
-	struct request_queue	*brd_queue;
-	struct gendisk		*brd_disk;
-	struct list_head	brd_list;
-
-	/*
-	 * Backing store of pages and lock to protect it. This is the contents
-	 * of the block device.
-	 */
-	spinlock_t		brd_lock;
-	struct radix_tree_root	brd_pages;
-};
-
 
 
 /*
@@ -363,6 +363,7 @@ static void brd_make_request(struct request_queue *q, struct bio *bio)
 	sector_t sector;
 	int i;
 	int err = -EIO;
+	int submitted_to_cache = 0;
 
 	sector = bio->bi_sector;
 	if (sector + (bio->bi_size >> SECTOR_SHIFT) >
@@ -382,7 +383,6 @@ static void brd_make_request(struct request_queue *q, struct bio *bio)
 		WriteSects+=bio->bi_size >> SECTOR_SHIFT;
 	}
 
-
 	bio_for_each_segment(bvec, bio, i) {
 		unsigned int len = bvec->bv_len;
 		err = brd_do_bvec(brd, bvec->bv_page, len,
@@ -392,8 +392,12 @@ static void brd_make_request(struct request_queue *q, struct bio *bio)
 		sector += len >> SECTOR_SHIFT;
 	}
 
+	if (enable_cache && rw != READ)
+		submitted_to_cache = submit_bio_to_cache(brd, bio);
 out:
-	bio_endio(bio, err);
+	/* If bio submitted to cache, bio_endio will be called in clone bio */
+	if (!submitted_to_cache)
+		bio_endio(bio, err);
 
 	return;
 }
@@ -464,29 +468,6 @@ static struct block_device_operations brd_fops = {
 };
 
 /*
- * And now the modules code and kernel interface.
- */
-static int rd_nr;
-static int enable_cache = 0;
-int rd_size = CONFIG_BLK_DEV_RAM_SIZE;
-static char* backing_dev_name = "/dev/ram0";
-static int max_part;
-static int part_shift;
-int DeviceMajor = 242;
-module_param(rd_nr, int, 0);
-MODULE_PARM_DESC(rd_nr, "Maximum number of brd devices");
-module_param(rd_size, int, 0);
-MODULE_PARM_DESC(rd_size, "Size of each RAM disk in kbytes.");
-module_param(max_part, int, 0);
-MODULE_PARM_DESC(max_part, "Maximum number of partitions per RAM disk");
-module_param(enable_cache, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(enable_cache, "Enable cache for memudisk");
-module_param(backing_dev_name, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(backing_dev_name, "Backing store device name");
-MODULE_LICENSE("GPL");
-
-
-/*
  * The device scheme is derived from loop.c. Keep them in synch where possible
  * (should share code eventually).
  */
@@ -555,6 +536,8 @@ static void brd_free(struct brd_device *brd)
 	put_disk(brd->brd_disk);
 	blk_cleanup_queue(brd->brd_queue);
 	brd_free_pages(brd);
+	if (enable_cache)
+		brd_cache_exit(brd);
 	kfree(brd);
 }
 
@@ -571,6 +554,8 @@ static struct brd_device *brd_init_one(int i)
 	if (brd) {
 		add_disk(brd->brd_disk);
 		list_add_tail(&brd->brd_list, &brd_devices);
+		if (enable_cache)
+			brd_cache_init(brd, backing_dev);
 	}
 out:
 	return brd;
@@ -600,6 +585,7 @@ static struct kobject *brd_probe(dev_t dev, int *part, void *data)
 static int __init brd_init(void)
 {
 	int i, nr;
+	int ret;
 	unsigned long range;
 	struct brd_device *brd, *next;
 
@@ -636,11 +622,31 @@ static int __init brd_init(void)
 	if (register_blkdev(DeviceMajor, "memuramdisk"))
 		return -EIO;
 
+#if 0
+	if (enable_cache) {
+		ret = brd_cache_open_backing_dev(&backing_dev, backing_dev_name);
+		if (ret)
+			brd_info("brd cache initialization failed\n");
+	}
+#endif
+
 	for (i = 0; i < nr; i++) {
 		brd = brd_alloc(i);
 		if (!brd)
 			goto out_free;
 		list_add_tail(&brd->brd_list, &brd_devices);
+		if (enable_cache) {
+			if (i == 0) {
+				ret = brd_cache_open_backing_dev(&backing_dev,
+							backing_dev_name, brd);
+				if (ret) {
+					brd_info("brd cache initialization "
+						"failed, disable cache\n");
+					enable_cache = 0;
+				}
+			}
+			brd_cache_init(brd, backing_dev);
+		}
 	}
 
 	/* point of no return */
@@ -651,7 +657,7 @@ static int __init brd_init(void)
 	blk_register_region(MKDEV(DeviceMajor, 0), range,
 				  THIS_MODULE, brd_probe, NULL, NULL);
 
-	printk(KERN_INFO "memubrd: module loaded\n");
+	printk(KERN_INFO "bankshot2: module loaded\n");
 
 #if 0
 	//create proc entry
@@ -697,6 +703,9 @@ static void __exit brd_exit(void)
 
 	list_for_each_entry_safe(brd, next, &brd_devices, brd_list)
 		brd_del_one(brd);
+
+	if (enable_cache)
+		blkdev_put(backing_dev, FMODE_READ | FMODE_WRITE | FMODE_EXCL);
 
 	blk_unregister_region(MKDEV(DeviceMajor, 0), range);
 	unregister_blkdev(DeviceMajor, "memuramdisk");
