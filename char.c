@@ -20,6 +20,16 @@ int brd_char_release(struct inode *inode, struct file *filp)
 
 long brd_char_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
+	struct brd_device *brd = filp->private_data;
+
+	switch (cmd) {
+	case BRD_CHAR_IOCTL_CACHE_DATA:
+		brd_info("ioctl sends to device %d, cmd 0x%x, arg %d\n", brd->brd_number, cmd, *(int *)arg);
+		break;
+	default:
+		break;
+	}
+
 	return 0;
 }
 

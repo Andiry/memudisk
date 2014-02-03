@@ -67,3 +67,6 @@ int brd_char_init(void);
 void brd_char_exit(void);
 int brd_char_setup(struct brd_device *brd);
 void brd_char_destroy(struct brd_device *brd);
+
+/* ioctls */
+#define BRD_CHAR_IOCTL_CACHE_DATA	0xBCD00000
